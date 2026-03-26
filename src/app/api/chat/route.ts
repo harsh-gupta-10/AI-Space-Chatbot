@@ -12,24 +12,47 @@ CRITICAL RULES FOR YOUR RESPONSES:
 4. Do not output large blocks of unbroken text.
 Use space analogies when appropriate, but keep explanations clear.`;
 
+type ChatMessage = {
+    role: string;
+    content: string;
+};
+
+function sanitizeHistory(messages: ChatMessage[]) {
+    const firstUserIndex = messages.findIndex((message) => message.role === "user");
+
+    if (firstUserIndex === -1) {
+        return [];
+    }
+
+    return messages.slice(firstUserIndex).filter((message) => message.role === "user" || message.role === "ai");
+}
+
 export async function POST(req: NextRequest) {
     try {
         const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+        if (!apiKey) {
+            return new Response("API key not configured", { status: 500 });
+        }
+
         const ai = new GoogleGenAI({ apiKey });
         const { messages } = await req.json();
+        const conversation = sanitizeHistory(Array.isArray(messages) ? messages : []);
 
-        // Format previous messages for context
-        const formattedHistory = messages.map((m: { role: string; content: string }) => ({
-            role: m.role === "user" ? "user" : "model",
-            parts: [{ text: m.content }]
+        if (conversation.length === 0) {
+            return new Response("No user message provided", { status: 400 });
+        }
+
+        const formattedHistory = conversation.map((message: ChatMessage) => ({
+            role: message.role === "user" ? "user" : "model",
+            parts: [{ text: message.content }],
         }));
 
         const responseStream = await ai.models.generateContentStream({
-            model: "gemini-2.5-flash",
+            model: "models/gemini-2.5-flash",
             contents: formattedHistory,
             config: {
                 systemInstruction: SYSTEM_PROMPT,
-            }
+            },
         });
 
         const encoder = new TextEncoder();
@@ -53,6 +76,6 @@ export async function POST(req: NextRequest) {
 
     } catch (error) {
         console.error("Gemini Error:", error);
-        return new Response("Error connecting to communications array.", { status: 500 });
+        return new Response(JSON.stringify({ error: String(error) }), { status: 500 });
     }
 }

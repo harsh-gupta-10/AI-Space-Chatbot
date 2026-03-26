@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, Mic, Copy, Trash2, ChevronLeft, Pause, Play } from "lucide-react";
+import { Send, Copy, Trash2, ChevronLeft, Pause, Play, Mic, MicOff } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { formatDistanceToNow } from "date-fns";
@@ -11,6 +11,29 @@ interface Message {
     content: string;
     timestamp: Date;
 }
+
+type SpeechRecognitionResultLike = {
+    transcript: string;
+};
+
+type SpeechRecognitionEventLike = {
+    results: ArrayLike<ArrayLike<SpeechRecognitionResultLike>>;
+};
+
+type SpeechRecognitionLike = {
+    continuous: boolean;
+    interimResults: boolean;
+    onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+    onerror: ((event: { error: string }) => void) | null;
+    onend: (() => void) | null;
+    start: () => void;
+    stop: () => void;
+};
+
+type WindowWithSpeechRecognition = Window & {
+    webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+    SpeechRecognition?: new () => SpeechRecognitionLike;
+};
 
 export default function ChatInterface() {
     const initialMessage: Message = {
@@ -25,8 +48,11 @@ export default function ChatInterface() {
     const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
     const [streamPaused, setStreamPaused] = useState(false);
     const [copyFeedback, setCopyFeedback] = useState(false);
+    const [isListening, setIsListening] = useState(false);
+    const [isSpeechRecognitionSupported, setIsSpeechRecognitionSupported] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
+    const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -36,57 +62,56 @@ export default function ChatInterface() {
         scrollToBottom();
     }, [messages]);
 
-    const [isTyping, setIsTyping] = useState(false);
-    const [isListening, setIsListening] = useState(false);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const recognitionRef = useRef<any>(null);
-
     useEffect(() => {
-        // Initialize speech recognition
-        if (typeof window !== "undefined" && "webkitSpeechRecognition" in window) {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const SpeechRecognition = (window as any).webkitSpeechRecognition;
-            recognitionRef.current = new SpeechRecognition();
-            recognitionRef.current.continuous = false;
-            recognitionRef.current.interimResults = true;
-
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            recognitionRef.current.onresult = (event: any) => {
-                const transcript = Array.from(event.results)
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    .map((result: any) => result[0].transcript)
-                    .join("");
-                setInput(transcript);
-            };
-
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            recognitionRef.current.onerror = (event: any) => {
-                console.error("Speech recognition error:", event.error);
-                setIsListening(false);
-            };
-
-            recognitionRef.current.onend = () => {
-                setIsListening(false);
-            };
+        if (typeof window === "undefined") {
+            return;
         }
+
+        const speechWindow = window as WindowWithSpeechRecognition;
+        const SpeechRecognition = speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
+
+        if (!SpeechRecognition) {
+            setIsSpeechRecognitionSupported(false);
+            return;
+        }
+
+        setIsSpeechRecognitionSupported(true);
+
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        recognition.onresult = (event) => {
+            const transcript = Array.from(event.results)
+                .map((result) => result[0]?.transcript ?? "")
+                .join("");
+
+            setInput(transcript);
+        };
+        recognition.onerror = (event) => {
+            console.error("Speech recognition error:", event.error);
+            setIsListening(false);
+        };
+        recognition.onend = () => {
+            setIsListening(false);
+        };
+
+        recognitionRef.current = recognition;
+
+        return () => {
+            recognition.stop();
+            recognitionRef.current = null;
+        };
     }, []);
 
-    const toggleListening = () => {
-        if (isListening) {
-            recognitionRef.current?.stop();
-        } else {
-            setInput(""); // Clear existing input when starting to listen
-            recognitionRef.current?.start();
-            setIsListening(true);
-        }
-    };
+    const [isTyping, setIsTyping] = useState(false);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!input.trim() || isTyping) return;
 
         const userMessage: Message = { role: "user", content: input, timestamp: new Date() };
-        setMessages((prev) => [...prev, userMessage]);
+        const nextMessages = [...messages, userMessage];
+        setMessages(nextMessages);
         setInput("");
         setIsTyping(true);
         setStreamPaused(false);
@@ -97,7 +122,12 @@ export default function ChatInterface() {
                 headers: {
                     "Content-Type": "application/json",
                 },
-                body: JSON.stringify({ messages: messages.map(m => ({ role: m.role, content: m.content })) }),
+                body: JSON.stringify({
+                    messages: nextMessages.map((message) => ({
+                        role: message.role,
+                        content: message.content,
+                    })),
+                }),
             });
 
             if (!response.ok) throw new Error("Network response was not ok");
@@ -159,9 +189,25 @@ export default function ChatInterface() {
         }
     };
 
-    
     const toggleStreamPause = () => {
         setStreamPaused(!streamPaused);
+    };
+
+    const toggleListening = () => {
+        const recognition = recognitionRef.current;
+
+        if (!recognition || !isSpeechRecognitionSupported) {
+            return;
+        }
+
+        if (isListening) {
+            recognition.stop();
+            return;
+        }
+
+        setInput("");
+        recognition.start();
+        setIsListening(true);
     };
 
     const estimateTokens = (text: string) => Math.ceil(text.split(/\s+/).length * 1.3);
@@ -294,14 +340,15 @@ export default function ChatInterface() {
                         <button
                             type="button"
                             onClick={toggleListening}
-                            className={`p-3 rounded-xl transition-all ${
+                            disabled={!isSpeechRecognitionSupported || isTyping}
+                            className={`p-3 rounded-xl border transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
                                 isListening
-                                    ? "bg-red-500/20 text-red-400 hover:bg-red-500/30 animate-pulse border border-red-500/30"
-                                    : "bg-white/5 text-zinc-400 hover:bg-white/10 hover:text-zinc-200 border border-transparent"
+                                    ? "bg-red-500/20 text-red-400 border-red-500/30 animate-pulse"
+                                    : "bg-white/5 text-zinc-400 hover:bg-white/10 hover:text-zinc-200 border-white/10"
                             }`}
-                            title={isListening ? "Stop listening" : "Start voice input"}
+                            title={isSpeechRecognitionSupported ? (isListening ? "Stop listening" : "Start voice input") : "Voice input not supported in this browser"}
                         >
-                            <Mic size={20} />
+                            {isListening ? <MicOff size={20} /> : <Mic size={20} />}
                         </button>
                         {isTyping && (
                             <button
@@ -335,7 +382,7 @@ export default function ChatInterface() {
             {/* Toast Notification */}
             {copyFeedback && (
                 <div className="fixed bottom-20 right-8 bg-green-500/90 text-white px-4 py-2 rounded-lg text-sm pointer-events-none animate-pulse">
-                    Copied to clipboard!
+                    Copied to clipboard!!!
                 </div>
             )}
         </div>
