@@ -46,7 +46,6 @@ export default function ChatInterface() {
     const [input, setInput] = useState("");
     const [sidebarOpen, setSidebarOpen] = useState(false);
     const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
-    const [streamPaused, setStreamPaused] = useState(false);
     const [copyFeedback, setCopyFeedback] = useState(false);
     const [isListening, setIsListening] = useState(false);
     const [isSpeechRecognitionSupported, setIsSpeechRecognitionSupported] = useState(false);
@@ -114,7 +113,6 @@ export default function ChatInterface() {
         setMessages(nextMessages);
         setInput("");
         setIsTyping(true);
-        setStreamPaused(false);
 
         try {
             const response = await fetch("/api/chat", {
@@ -141,11 +139,6 @@ export default function ChatInterface() {
 
             let done = false;
             while (!done) {
-                if (streamPaused) {
-                    await new Promise(resolve => setTimeout(resolve, 100));
-                    continue;
-                }
-
                 const { value, done: readerDone } = await reader.read();
                 done = readerDone;
                 if (value) {
@@ -187,10 +180,6 @@ export default function ChatInterface() {
         if (confirm("Clear all messages? This cannot be undone.")) {
             setMessages([initialMessage]);
         }
-    };
-
-    const toggleStreamPause = () => {
-        setStreamPaused(!streamPaused);
     };
 
     const toggleListening = () => {
@@ -350,16 +339,6 @@ export default function ChatInterface() {
                         >
                             {isListening ? <MicOff size={20} /> : <Mic size={20} />}
                         </button>
-                        {isTyping && (
-                            <button
-                                type="button"
-                                onClick={toggleStreamPause}
-                                className="p-3 rounded-xl bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 border border-yellow-500/30 transition-all"
-                                title={streamPaused ? "Resume" : "Pause"}
-                            >
-                                {streamPaused ? <Play size={20} /> : <Pause size={20} />}
-                            </button>
-                        )}
                         <input
                             type="text"
                             value={input}
@@ -382,7 +361,7 @@ export default function ChatInterface() {
             {/* Toast Notification */}
             {copyFeedback && (
                 <div className="fixed bottom-20 right-8 bg-green-500/90 text-white px-4 py-2 rounded-lg text-sm pointer-events-none animate-pulse">
-                    Copied to clipboard!!!
+                    Copied to clipboard!
                 </div>
             )}
         </div>
