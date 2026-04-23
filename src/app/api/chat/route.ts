@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import OpenAI from "openai";
 import { NextRequest } from "next/server";
 
 const SYSTEM_PROMPT = `You are a NASA ex-scientist expert AI. 
@@ -10,7 +10,7 @@ CRITICAL RULES FOR YOUR RESPONSES:
 2. Structure your answers using Markdown formatting (headings, bold text).
 3. Always use bullet points or numbered lists instead of long paragraphs when explaining concepts or listing facts.
 4. Do not output large blocks of unbroken text.
-Use space analogies when appropriate, but keep explanations clear.`;
+5. Use space analogies when appropriate, but keep explanations clear.`;
 
 type ChatMessage = {
     role: string;
@@ -24,17 +24,22 @@ function sanitizeHistory(messages: ChatMessage[]) {
         return [];
     }
 
-    return messages.slice(firstUserIndex).filter((message) => message.role === "user" || message.role === "ai");
+    return messages.slice(firstUserIndex).filter((message) => message.role === "user" || message.role === "ai" || message.role === "assistant");
 }
 
 export async function POST(req: NextRequest) {
     try {
-        const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
-        if (!apiKey) {
-            return new Response("API key not configured", { status: 500 });
+        const apiKey = process.env.NEXT_HACKCLUB_API_KEY || process.env.HACKCLUB_API_KEY;
+        
+        if (!apiKey || apiKey === "your_hack_club_api_key_here") {
+            return new Response("API key not configured. Please add HACKCLUB_API_KEY to your .env.local file.", { status: 500 });
         }
 
-        const ai = new GoogleGenAI({ apiKey });
+        const openai = new OpenAI({
+            apiKey: apiKey,
+            baseURL: "https://ai.hackclub.com/proxy/v1",
+        });
+
         const { messages } = await req.json();
         const conversation = sanitizeHistory(Array.isArray(messages) ? messages : []);
 
@@ -42,28 +47,35 @@ export async function POST(req: NextRequest) {
             return new Response("No user message provided", { status: 400 });
         }
 
-        const formattedHistory = conversation.map((message: ChatMessage) => ({
-            role: message.role === "user" ? "user" : "model",
-            parts: [{ text: message.content }],
-        }));
+        const openaiMessages = [
+            { role: "system", content: SYSTEM_PROMPT },
+            ...conversation.map((message: ChatMessage) => ({
+                role: message.role === "ai" ? "assistant" : message.role,
+                content: message.content,
+            })),
+        ];
 
-        const responseStream = await ai.models.generateContentStream({
-            model: "models/gemini-2.5-flash",
-            contents: formattedHistory,
-            config: {
-                systemInstruction: SYSTEM_PROMPT,
-            },
+        const response = await openai.chat.completions.create({
+            model: "qwen/qwen-2-5-72b-instruct",
+            messages: openaiMessages as any,
+            stream: true,
         });
 
         const encoder = new TextEncoder();
         const stream = new ReadableStream({
             async start(controller) {
-                for await (const chunk of responseStream) {
-                    if (chunk.text) {
-                        controller.enqueue(encoder.encode(chunk.text));
+                try {
+                    for await (const chunk of response) {
+                        const content = chunk.choices[0]?.delta?.content || "";
+                        if (content) {
+                            controller.enqueue(encoder.encode(content));
+                        }
                     }
+                    controller.close();
+                } catch (error) {
+                    console.error("Stream Error:", error);
+                    controller.error(error);
                 }
-                controller.close();
             },
         });
 
@@ -74,8 +86,14 @@ export async function POST(req: NextRequest) {
             },
         });
 
-    } catch (error) {
-        console.error("Gemini Error:", error);
-        return new Response(JSON.stringify({ error: String(error) }), { status: 500 });
+    } catch (error: any) {
+        console.error("Chat API Error:", error);
+        return new Response(JSON.stringify({ 
+            error: error.message || String(error),
+            details: "Ensure your Hack Club API key is valid and you have access to the model."
+        }), { 
+            status: 500,
+            headers: { "Content-Type": "application/json" }
+        });
     }
 }

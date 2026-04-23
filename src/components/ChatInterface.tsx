@@ -319,7 +319,7 @@ export default function ChatInterface() {
                     <div className="px-6 py-3 bg-black/40 border-y border-white/5 flex justify-between text-xs text-zinc-400">
                         <span>Messages: {messages.length}</span>
                         <span>≈ {totalTokens} tokens</span>
-                        <span>Model: gemini-2.5-flash</span>
+                        <span>Model: Qwen 2.5 (Hack Club)</span>
                     </div>
                 )}
 
